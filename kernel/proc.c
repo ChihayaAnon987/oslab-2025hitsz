@@ -299,6 +299,18 @@ void exit(int status) {
 
   if (p == initproc) panic("init exiting");
 
+  static char *states[] = {[UNUSED] "unused", [SLEEPING] "sleep ", [RUNNABLE] "runble", [RUNNING] "run   ", [ZOMBIE] "zombie"};
+
+  exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, p->parent->pid, p->parent->name, states[p->parent->state]);
+
+  int i = 0;
+  for (struct proc *child = proc; child < &proc[NPROC]; child++) {
+    if (child->parent == p) {
+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n", p->pid, i++, child->pid, child->name, states[child->state]);
+    }
+  }
+
+
   // Close all open files.
   for (int fd = 0; fd < NOFILE; fd++) {
     if (p->ofile[fd]) {
@@ -356,7 +368,7 @@ void exit(int status) {
 
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
-int wait(uint64 addr) {
+int wait(uint64 addr, int flags) {
   struct proc *np;
   int havekids, pid;
   struct proc *p = myproc();
@@ -364,6 +376,31 @@ int wait(uint64 addr) {
   // hold p->lock for the whole time to avoid lost
   // wakeups from a child's exit().
   acquire(&p->lock);
+
+  // ·Ç×èÈû
+  if (flags == 1) {
+    for (struct proc *child = proc; child < &proc[NPROC]; child++) {
+      if (child->parent == p) {
+        acquire(&child->lock);
+        if (child->state == ZOMBIE) {
+          pid = child->pid;
+          if (addr != 0 && copyout(p->pagetable, addr, (char *)&child->xstate, sizeof(child->xstate)) < 0) {
+            release(&child->lock);
+            release(&p->lock);
+            return -1;
+          }
+          freeproc(child);
+          release(&child->lock);
+          release(&p->lock);
+          return pid;
+        }
+        release(&child->lock);
+      }
+    }
+    release(&p->lock);
+    return -1;
+  }
+
 
   for (;;) {
     // Scan through table looking for exited children.
