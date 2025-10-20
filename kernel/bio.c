@@ -36,6 +36,19 @@ typedef struct {
   entry_t array[NBUF];
 } MinHeap;
 
+typedef struct {
+  struct spinlock lock;    // 锁
+  buf_t head;              // 缓冲区链表头节点
+} bucket_t;
+
+struct {
+  struct spinlock freelock;   // 空闲链表锁
+  MinHeap freelist;           // 空闲链表(最小堆实现)
+  buf_t buf[NBUF];            // 所有缓冲区
+  bucket_t buckets[NBUCKET];  // 哈希表桶
+} bcache;
+
+
 // 交换两个 entry_t 的值
 void swap(entry_t *x, entry_t *y) {
   entry_t temp = *x;
@@ -93,18 +106,6 @@ entry_t getMin(MinHeap *heap) {
   }
   return heap->array[0];
 }
-
-typedef struct {
-  struct spinlock lock;    // 锁
-  buf_t head;              // 缓冲区链表头节点
-} bucket_t;
-
-struct {
-  struct spinlock freelock;   // 空闲链表锁
-  MinHeap freelist;           // 空闲链表(最小堆实现)
-  buf_t buf[NBUF];            // 所有缓冲区
-  bucket_t buckets[NBUCKET];  // 哈希表桶
-} bcache;
 
 void binit(void) {
   // 初始化空闲链表锁
