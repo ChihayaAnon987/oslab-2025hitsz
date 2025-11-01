@@ -303,6 +303,7 @@ void exit(int status) {
 
   exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, p->parent->pid, p->parent->name, states[p->parent->state]);
 
+  // ????????????????????????
   int i = 0;
   for (struct proc *child = proc; child < &proc[NPROC]; child++) {
     if (child->parent == p) {
