@@ -37,6 +37,7 @@ void procinit(void) {
     uint64 va = KSTACK((int)(p - proc));
     kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
+    p->kstack_pa = (uint64)pa;  // 保存内核栈物理地址
   }
   kvminithart();
 }
@@ -97,7 +98,17 @@ static struct proc *allocproc(void) {
 found:
   p->pid = allocpid();
 
-  // Allocate a trapframe page.
+  // 申请进程的内核页表
+  p->k_pagetable = kvminit_new_proc();
+  if (p->k_pagetable == 0) {
+    release(&p->lock);
+    return 0;
+  }
+
+  // 将内核栈映射到进程的内核页表
+  kvmmap_new_proc(p->k_pagetable, p->kstack, p->kstack_pa, PGSIZE, PTE_R | PTE_W);
+
+  // 分配一个 trapframe 页面。
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     release(&p->lock);
     return 0;
@@ -128,6 +139,13 @@ static void freeproc(struct proc *p) {
   p->trapframe = 0;
   if (p->pagetable) proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  
+  // 释放进程的内核页表
+  if (p->k_pagetable) {
+    free_kernel_pagetable(p->k_pagetable);
+    p->k_pagetable = 0;
+  }
+  
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -430,11 +448,17 @@ void scheduler(void) {
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        
+        // 切换到进程的内核页表
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
+        
         swtch(&c->context, &p->context);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
+        // 进程执行完毕，切换回全局内核页表
         c->proc = 0;
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
 
         found = 1;
       }

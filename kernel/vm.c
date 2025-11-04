@@ -52,6 +52,40 @@ void kvminithart() {
   sfence_vma();
 }
 
+// 为进程的内核空间创建直接映射页表
+// 类似于 kvminit() 但不映射 CLINT 以避免地址冲突
+pagetable_t kvminit_new_proc() {
+  pagetable_t new_pagetable = (pagetable_t)kalloc();
+  if (new_pagetable == 0) return 0;
+  memset(new_pagetable, 0, PGSIZE);
+
+  // uart 寄存器
+  kvmmap_new_proc(new_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio 磁盘接口
+  kvmmap_new_proc(new_pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmap_new_proc(new_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // 映射内核文本为可执行和只读
+  kvmmap_new_proc(new_pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // 映射内核数据和我们将使用的物理 RAM
+  kvmmap_new_proc(new_pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // 将陷阱入口/出口的跳板映射到
+  // 内核中的最高虚拟地址
+  kvmmap_new_proc(new_pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  
+  return new_pagetable;
+}
+
+// kvminit_new_proc 的辅助函数 - 类似于 kvmmap 但使用指定的页表
+void kvmmap_new_proc(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+  if (mappages(pagetable, va, sz, pa, perm) != 0) panic("kvmmap_new_proc");
+}
+
 // Return the address of the PTE in page table pagetable
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page-table pages.
@@ -243,10 +277,30 @@ void freewalk(pagetable_t pagetable) {
   kfree((void *)pagetable);
 }
 
+// 递归释放内核页表页面而不释放物理页面
+// 用于进程内核页表，它们共享相同的物理页面
+void free_kernel_pagetable(pagetable_t pagetable) {
+  // 遍历页表项
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // 此 PTE 指向低级页表
+      uint64 child = PTE2PA(pte);
+      free_kernel_pagetable((pagetable_t)child);
+      pagetable[i] = 0;
+    } else if (pte & PTE_V) {
+      // 对于内核页表，不释放物理页面，因为它们是共享的
+      // 只需清除 PTE
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void *)pagetable);
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void uvmfree(pagetable_t pagetable, uint64 sz) {
-  if (sz > 0) uvmunmap(pagetable, 0, PGROUNDUP(sz) / PGSIZE, 1);
+  if (sz > 0) uvmunmap(pagetable, 0, PGROUNDUP(sz) / PGSIZE, 1);  // 会先删除用户空间(从0开始)
   freewalk(pagetable);
 }
 
@@ -378,4 +432,92 @@ int test_pagetable() {
   uint64 gsatp = MAKE_SATP(kernel_pagetable);
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
+}
+
+
+
+// 设置页表项标志位字符串表示
+// 参数: pte - 页表项
+// 返回值: 表示权限的字符串
+static inline char *setflags(pte_t pte) {
+  static char flags[] = "----";
+  flags[0] = (pte & PTE_R) ? 'r' : '-';  // 读权限
+  flags[1] = (pte & PTE_W) ? 'w' : '-';  // 写权限
+  flags[2] = (pte & PTE_X) ? 'x' : '-';  // 执行权限
+  flags[3] = (pte & PTE_U) ? 'u' : '-';  // 用户权限
+  return flags;
+}
+
+// 打印三级页表项信息（最低级页表）
+// 参数: pgtbl - 页表地址
+//      vpn2 - 二级VPN
+//      vpn1 - 一级VPN
+static void _vmprint0(pagetable_t pgtbl, uint64 vpn2, uint64 vpn1) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pgtbl[i];
+    // 检查页表项是否有效
+    if (pte & PTE_V) {
+      char *flags = setflags(pte);
+      // 构造虚拟地址的页面部分: VPN2 | VPN1 | VPN0 (页内偏移为0，页表项对应整个页面)
+      uint64 va = (vpn2 << 30) | (vpn1 << 21) | (i << 12);
+      
+      // 跳过内核空间和PLIC区域的地址显示
+      if ((KERNBASE <= va && va < PHYSTOP) || (PLIC <= va && va < PLIC + 0x400000)) {
+        continue;
+      }
+      
+      // 打印三级页表项信息: 虚拟地址->物理地址及权限
+      printf("||   ||   ||idx: %d: va: %p -> pa: %p, flags: %s\n", i, va, PTE2PA(pte), flags);
+    }
+  }
+  return;
+}
+
+// 打印二级页表项信息
+// 参数: pgtbl - 页表地址
+//      vpn2 - 二级VPN
+static void _vmprint1(pagetable_t pgtbl, uint64 vpn2) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pgtbl[i];
+    // 检查页表项是否有效
+    if (pte & PTE_V) {
+      uint64 child = PTE2PA(pte);  // 获取下一级页表的物理地址
+      char *flags = setflags(pte);
+      
+      // 虚拟地址，跳过内核空间和PLIC区域的地址显示
+      uint64 va = (vpn2 << 30) | (i << 21) | (0 << 12);
+      if ((KERNBASE <= va && va < PHYSTOP) || (PLIC <= va && va < PLIC + 0x400000)) {
+        continue;
+      }
+      
+      // 打印二级页表项信息
+      printf("||   ||idx: %d: pa: %p, flags: %s\n", i, child, flags);
+      // 递归打印三级页表
+      _vmprint0((pagetable_t)child, vpn2, i);
+    }
+  }
+  return;
+}
+
+// 打印页表结构主函数
+// 参数: pgtbl - 顶级页表地址
+void vmprint(pagetable_t pgtbl) {
+  // 打印页表起始地址
+  printf("page table %p\n", pgtbl);
+  
+  // 遍历顶级页表(512个项)
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pgtbl[i];
+    // 检查页表项是否有效
+    if (pte & PTE_V) {
+      uint64 child = PTE2PA(pte);  // 获取下一级页表的物理地址
+      char *flags = setflags(pte);
+      
+      // 打印一级页表项信息
+      printf("||idx: %d: pa: %p, flags: %s\n", i, child, flags);
+      // 递归打印二级页表
+      _vmprint1((pagetable_t)child, i);
+    }
+  }
+  return;
 }
