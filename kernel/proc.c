@@ -37,7 +37,7 @@ void procinit(void) {
     uint64 va = KSTACK((int)(p - proc));
     kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
-    p->kstack_pa = (uint64)pa;  // �����ں�ջ������ַ
+    p->kstack_pa = (uint64)pa;  // 保存内核栈物理地址
   }
   kvminithart();
 }
@@ -98,17 +98,18 @@ static struct proc *allocproc(void) {
 found:
   p->pid = allocpid();
 
-  // ������̵��ں�ҳ��
+  // 申请进程的内核页表
   p->k_pagetable = kvminit_new_proc();
-  if (p->k_pagetable == 0) {
+  if(p->k_pagetable == 0){
+    freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  // ���ں�ջӳ�䵽���̵��ں�ҳ��
+  // 将内核栈映射到进程的内核页表
   kvmmap_new_proc(p->k_pagetable, p->kstack, p->kstack_pa, PGSIZE, PTE_R | PTE_W);
 
-  // ����һ�� trapframe ҳ�档
+  // 分配一个 trapframe 页面。
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     release(&p->lock);
     return 0;
@@ -131,6 +132,27 @@ found:
   return p;
 }
 
+
+// 递归释放内核页表页面而不释放物理页面
+// 用于进程内核页表，它们共享相同的物理页面
+void free_kernel_pagetable(pagetable_t pagetable) {
+  // 遍历页表项
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // 此 PTE 指向低级页表
+      uint64 child = PTE2PA(pte);
+      free_kernel_pagetable((pagetable_t)child);
+      pagetable[i] = 0;
+    } else if (pte & PTE_V) {
+      // 对于内核页表，不释放物理页面，因为它们是共享的
+      // 只需清除 PTE
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void *)pagetable);
+}
+
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -139,13 +161,6 @@ static void freeproc(struct proc *p) {
   p->trapframe = 0;
   if (p->pagetable) proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
-  
-  // �ͷŽ��̵��ں�ҳ��
-  if (p->k_pagetable) {
-    free_kernel_pagetable(p->k_pagetable);
-    p->k_pagetable = 0;
-  }
-  
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -154,6 +169,18 @@ static void freeproc(struct proc *p) {
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  // 将内核页表的前96项置零，避免重复回收
+  pagetable_t kpgtbl_sec = (pagetable_t) PTE2PA (p->k_pagetable[0]);
+  for (int i = 0; i < 96; i++) {
+    kpgtbl_sec[i] = 0;
+  }
+
+  // 释放进程的内核页表
+  if (p->k_pagetable) {
+    free_kernel_pagetable(p->k_pagetable);
+    p->k_pagetable = 0;
+  }
 }
 
 // Create a user page table for a given process,
@@ -220,6 +247,8 @@ void userinit(void) {
 
   p->state = RUNNABLE;
 
+  sync_pagetable(p->pagetable, p->k_pagetable);
+
   release(&p->lock);
 }
 
@@ -238,6 +267,9 @@ int growproc(int n) {
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   p->sz = sz;
+
+  sync_pagetable(p->pagetable, p->k_pagetable);
+
   return 0;
 }
 
@@ -279,6 +311,9 @@ int fork(void) {
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  //给子进程np 同步内核页表
+  sync_pagetable(np->pagetable, np->k_pagetable);
 
   release(&np->lock);
 
@@ -449,13 +484,13 @@ void scheduler(void) {
         p->state = RUNNING;
         c->proc = p;
         
-        // �л������̵��ں�ҳ��
+        // 切换到进程的内核页表
         w_satp(MAKE_SATP(p->k_pagetable));
         sfence_vma();
         
         swtch(&c->context, &p->context);
 
-        // ����ִ����ϣ��л���ȫ���ں�ҳ��
+        // 进程执行完毕，切换回全局内核页表
         c->proc = 0;
         w_satp(MAKE_SATP(kernel_pagetable));
         sfence_vma();
