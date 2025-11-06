@@ -159,8 +159,6 @@ uint64 kvmpa(uint64 va) {
 }
 
 void sync_pagetable(pagetable_t uvm, pagetable_t kvm) {
-  // 次级页表号为0~95号，因此全在0号页目录表上
-
   pagetable_t upgtbl_sec;
   pagetable_t kpgtbl_sec;
   pte_t *pte_k = &kvm[0];
@@ -176,7 +174,8 @@ void sync_pagetable(pagetable_t uvm, pagetable_t kvm) {
     kpgtbl_sec = (pagetable_t) PTE2PA(*pte_k);
   } else {
     kpgtbl_sec = (pagetable_t) kalloc();
-    if(kpgtbl_sec == 0) panic("sync_pagetable: kalloc");
+    if(kpgtbl_sec == 0)
+      panic("sync_pagetable: kalloc");
     memset(kpgtbl_sec, 0, PGSIZE);
     *pte_k = PA2PTE(kpgtbl_sec) | PTE_V;
   }
@@ -185,7 +184,6 @@ void sync_pagetable(pagetable_t uvm, pagetable_t kvm) {
   for (int i = 0; i < 96; i ++ ) {
     kpgtbl_sec[i] = upgtbl_sec[i];
   }
-
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -425,13 +423,13 @@ static inline char *setflags(pte_t pte) {
 // 参数: pgtbl - 页表地址
 //      vpn2 - 二级VPN
 //      vpn1 - 一级VPN
-static void _vmprint0(pagetable_t pgtbl, uint64 vpn2, uint64 vpn1) {
+static void vmprint2(pagetable_t pgtbl, uint64 vpn2, uint64 vpn1) {
   for (int i = 0; i < 512; i++) {
     pte_t pte = pgtbl[i];
     // 检查页表项是否有效
     if (pte & PTE_V) {
       char *flags = setflags(pte);
-      // 构造虚拟地址的页面部分: VPN2 | VPN1 | VPN0 (页内偏移为0，页表项对应整个页面)
+      // 构造虚拟地址的页面部分: VPN2 | VPN1 | VPN0
       uint64 va = (vpn2 << 30) | (vpn1 << 21) | (i << 12);
       
       // 跳过内核空间和PLIC区域的地址显示
@@ -449,7 +447,7 @@ static void _vmprint0(pagetable_t pgtbl, uint64 vpn2, uint64 vpn1) {
 // 打印二级页表项信息
 // 参数: pgtbl - 页表地址
 //      vpn2 - 二级VPN
-static void _vmprint1(pagetable_t pgtbl, uint64 vpn2) {
+static void vmprint1(pagetable_t pgtbl, uint64 vpn2) {
   for (int i = 0; i < 512; i++) {
     pte_t pte = pgtbl[i];
     // 检查页表项是否有效
@@ -466,7 +464,7 @@ static void _vmprint1(pagetable_t pgtbl, uint64 vpn2) {
       // 打印二级页表项信息
       printf("||   ||idx: %d: pa: %p, flags: %s\n", i, child, flags);
       // 递归打印三级页表
-      _vmprint0((pagetable_t)child, vpn2, i);
+      vmprint2((pagetable_t)child, vpn2, i);
     }
   }
   return;
@@ -489,7 +487,7 @@ void vmprint(pagetable_t pgtbl) {
       // 打印一级页表项信息
       printf("||idx: %d: pa: %p, flags: %s\n", i, child, flags);
       // 递归打印二级页表
-      _vmprint1((pagetable_t)child, i);
+      vmprint1((pagetable_t)child, i);
     }
   }
   return;
