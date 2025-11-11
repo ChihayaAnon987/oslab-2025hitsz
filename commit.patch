@@ -1,0 +1,304 @@
+diff --git a/Makefile b/Makefile
+index ded5bc2..548c944 100644
+--- a/Makefile
++++ b/Makefile
+@@ -183,6 +183,7 @@ UPROGS=\
+ 	$U/_mkdir\
+ 	$U/_rm\
+ 	$U/_sh\
++	$U/_alarmtest\
+ 	$U/_stressfs\
+ 	$U/_usertests\
+ 	$U/_grind\
+@@ -340,7 +341,8 @@ grade:
+ ##
+ ## FOR web handin
+ ##
+-
++diff:
++	git diff origin/traps HEAD > commit.patch
+ 
+ WEBSUB := https://6828.scripts.mit.edu/2022/handin.py
+ 
+diff --git a/grade-lab-traps b/grade-lab-traps
+old mode 100755
+new mode 100644
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..4b82fc2 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -80,6 +80,7 @@ int             pipewrite(struct pipe*, uint64, int);
+ void            printf(char*, ...);
+ void            panic(char*) __attribute__((noreturn));
+ void            printfinit(void);
++void            backtrace(void);
+ 
+ // proc.c
+ int             cpuid(void);
+diff --git a/kernel/printf.c b/kernel/printf.c
+index 1a50203..1dcb28e 100644
+--- a/kernel/printf.c
++++ b/kernel/printf.c
+@@ -123,6 +123,7 @@ panic(char *s)
+   printf(s);
+   printf("\n");
+   panicked = 1; // freeze uart output from other CPUs
++  backtrace();
+   for(;;)
+     ;
+ }
+@@ -133,3 +134,23 @@ printfinit(void)
+   initlock(&pr.lock, "pr");
+   pr.locking = 1;
+ }
++
++void backtrace(void)
++{
++  // 从寄存器s0获取当前的帧指针
++  uint64 fp = r_fp();
++  uint64 current_fp = fp;
++
++  // 打印回溯信息头部
++  printf("backtrace:\n");
++  
++  // 遍历调用栈帧，直到超出当前页面边界
++  while(current_fp < PGROUNDUP(fp))
++  {
++    // 打印返回地址（存储在帧指针偏移-8的位置）
++    printf("%p\n", *(uint64 *)(current_fp - 8));
++    
++    // 获取前一个栈帧的帧指针（存储在帧指针偏移-16的位置）
++    current_fp = *(uint64 *)(current_fp - 16);
++  }
++}
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 959b778..5fb870e 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -145,6 +145,11 @@ found:
+   memset(&p->context, 0, sizeof(p->context));
+   p->context.ra = (uint64)forkret;
+   p->context.sp = p->kstack + PGSIZE;
++  
++  // 初始化进程的报警和信号处理相关字段
++  p->elapse_ticks = 0;                    // 清零已过去的时钟周期数
++  memset(&p->intr_trap, 0, sizeof(struct trapframe));  // 清空中断trapframe
++  p->intr_is_running = 0;                 // 清除中断处理标志
+ 
+   return p;
+ }
+@@ -169,6 +174,9 @@ freeproc(struct proc *p)
+   p->killed = 0;
+   p->xstate = 0;
+   p->state = UNUSED;
++  p->elapse_ticks = 0;
++  memset(&p->intr_trap, 0, sizeof(struct trapframe));
++  p->intr_is_running = 0;
+ }
+ 
+ // Create a user page table for a given process, with no user memory,
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..da2dae2 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,12 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  
++  // 信号报警机制相关字段
++  int alarm_interval;          // 报警间隔（ticks数），0表示禁用报警
++  uint64 alarm_handler;        // 报警处理函数的用户空间地址
++  int elapse_ticks;            // 自上次报警以来经过的时钟周期数
++  struct trapframe intr_trap;  // 中断发生时保存的trapframe，用于信号处理完成后恢复
++  int intr_is_running;         // 信号处理程序是否正在运行的标志
++
+ };
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index 20a01db..6d62b0c 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -9,6 +9,17 @@ r_mhartid()
+   return x;
+ }
+ 
++// 获取当前执行函数的帧指针(s0寄存器)
++static inline uint64
++r_fp()
++{
++  uint64 x;
++  // 使用内联汇编读取s0寄存器的值
++  asm volatile("mv %0, s0": "=r" (x));
++  return x;
++}
++
++
+ // Machine Status Register, mstatus
+ 
+ #define MSTATUS_MPP_MASK (3L << 11) // previous mode.
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..c34b372 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_sigalarm(void);
++extern uint64 sys_sigreturn(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +128,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_sigalarm] sys_sigalarm,
++[SYS_sigreturn] sys_sigreturn,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..67ca3a4 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_sigalarm 22
++#define SYS_sigreturn 23
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 3b4d5bd..16760ae 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -66,6 +66,7 @@ sys_sleep(void)
+     }
+     sleep(&ticks, &tickslock);
+   }
++  backtrace();
+   release(&tickslock);
+   return 0;
+ }
+@@ -91,3 +92,40 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++uint64
++sys_sigalarm(void)
++{
++  int n;          // 报警间隔（ticks数）
++  uint64 p;       // 信号处理函数的用户空间地址
++
++  // 获取系统调用参数
++  argint(0, &n);      // 第一个参数：报警间隔
++  argaddr(1, &p);     // 第二个参数：信号处理函数地址
++  
++  // 设置进程的报警参数
++  myproc()->alarm_interval = n;    // 设置报警间隔
++  myproc()->alarm_handler = p;     // 设置报警处理函数地址
++  myproc()->intr_is_running = 0;   // 清除中断处理标志，表示当前没有信号处理程序在运行
++  return 0;
++}
++
++uint64
++sys_sigreturn(void)
++{
++  struct proc *p = myproc();
++  
++  // 恢复中断发生时保存的trapframe，这会恢复所有的用户寄存器状态
++  // 包括a0寄存器
++  memmove(p->trapframe, &(p->intr_trap), sizeof(struct trapframe));
++  
++  // 清除中断处理标志，表示信号处理已完成
++  p->intr_is_running = 0;
++  
++  // 直接返回用户空间，不通过正常的系统调用返回路径
++  // 这样可以保持所有寄存器状态，包括a0寄存器
++  usertrapret();
++  
++  // 正常情况下不会执行到这里
++  return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..99cd736 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -76,9 +76,34 @@ usertrap(void)
+   if(killed(p))
+     exit(-1);
+ 
+-  // give up the CPU if this is a timer interrupt.
++  // 处理时钟中断
+   if(which_dev == 2)
++  {
++    // 检查是否需要触发报警信号：
++    // 1. 报警功能已启用（alarm_interval不为0或alarm_handler不为0）
++    // 2. 当前没有信号处理程序正在运行（防止信号处理程序重入）
++    if(!(p->alarm_interval == 0 && p->alarm_handler == 0) && !(p->intr_is_running))
++    {
++
++      // 增加已过去的时钟周期计数
++      p->elapse_ticks += 1;
++      
++      // 检查是否达到报警间隔
++      if(p->elapse_ticks >= p->alarm_interval)
++      {
++        // 保存当前的trapframe，以便信号处理完成后能恢复执行
++        memmove(&(p->intr_trap), p->trapframe, sizeof(struct trapframe));
++        
++        // 设置程序计数器(epc)指向报警处理函数，重置已过去的时钟周期计数
++        p->trapframe->epc = p->alarm_handler;
++        p->elapse_ticks = 0;
++        
++        // 设置中断处理标志，表示信号处理程序正在运行
++        p->intr_is_running = 1;
++      }
++    }
+     yield();
++  }
+ 
+   usertrapret();
+ }
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..62f9457
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++6
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..ff90b9d 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int sigalarm(int ticks, void (*handler)());
++int sigreturn(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+@@ -38,4 +40,4 @@ void* malloc(uint);
+ void free(void*);
+ int atoi(const char*);
+ int memcmp(const void *, const void *, uint);
+-void *memcpy(void *, const void *, uint);
++void *memcpy(void *, const void *, uint);
+\ No newline at end of file
+diff --git a/user/usys.pl b/user/usys.pl
+old mode 100755
+new mode 100644
+index 01e426e..fa548b0
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("sigalarm");
++entry("sigreturn");
