@@ -76,9 +76,34 @@ usertrap(void)
   if(killed(p))
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
+  // 处理时钟中断
   if(which_dev == 2)
+  {
+    // 检查是否需要触发报警信号：
+    // 1. 报警功能已启用（alarm_interval不为0或alarm_handler不为0）
+    // 2. 当前没有信号处理程序正在运行（防止信号处理程序重入）
+    if(!(p->alarm_interval == 0 && p->alarm_handler == 0) && !(p->intr_is_running))
+    {
+
+      // 增加已过去的时钟周期计数
+      p->elapse_ticks += 1;
+      
+      // 检查是否达到报警间隔
+      if(p->elapse_ticks >= p->alarm_interval)
+      {
+        // 保存当前的trapframe，以便信号处理完成后能恢复执行
+        memmove(&(p->intr_trap), p->trapframe, sizeof(struct trapframe));
+        
+        // 设置程序计数器(epc)指向报警处理函数，重置已过去的时钟周期计数
+        p->trapframe->epc = p->alarm_handler;
+        p->elapse_ticks = 0;
+        
+        // 设置中断处理标志，表示信号处理程序正在运行
+        p->intr_is_running = 1;
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }

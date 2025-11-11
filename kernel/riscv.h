@@ -9,6 +9,17 @@ r_mhartid()
   return x;
 }
 
+// 获取当前执行函数的帧指针(s0寄存器)
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  // 使用内联汇编读取s0寄存器的值
+  asm volatile("mv %0, s0": "=r" (x));
+  return x;
+}
+
+
 // Machine Status Register, mstatus
 
 #define MSTATUS_MPP_MASK (3L << 11) // previous mode.

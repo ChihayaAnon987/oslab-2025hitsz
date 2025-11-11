@@ -123,6 +123,7 @@ panic(char *s)
   printf(s);
   printf("\n");
   panicked = 1; // freeze uart output from other CPUs
+  backtrace();
   for(;;)
     ;
 }
@@ -132,4 +133,24 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void backtrace(void)
+{
+  // 从寄存器s0获取当前的帧指针
+  uint64 fp = r_fp();
+  uint64 current_fp = fp;
+
+  // 打印回溯信息头部
+  printf("backtrace:\n");
+  
+  // 遍历调用栈帧，直到超出当前页面边界
+  while(current_fp < PGROUNDUP(fp))
+  {
+    // 打印返回地址（存储在帧指针偏移-8的位置）
+    printf("%p\n", *(uint64 *)(current_fp - 8));
+    
+    // 获取前一个栈帧的帧指针（存储在帧指针偏移-16的位置）
+    current_fp = *(uint64 *)(current_fp - 16);
+  }
 }

@@ -183,6 +183,7 @@ UPROGS=\
 	$U/_mkdir\
 	$U/_rm\
 	$U/_sh\
+	$U/_alarmtest\
 	$U/_stressfs\
 	$U/_usertests\
 	$U/_grind\
@@ -340,7 +341,8 @@ grade:
 ##
 ## FOR web handin
 ##
-
+diff:
+	git diff origin/traps HEAD > commit.patch
 
 WEBSUB := https://6828.scripts.mit.edu/2022/handin.py
 

@@ -145,6 +145,11 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  
+  // 初始化进程的报警和信号处理相关字段
+  p->elapse_ticks = 0;                    // 清零已过去的时钟周期数
+  memset(&p->intr_trap, 0, sizeof(struct trapframe));  // 清空中断trapframe
+  p->intr_is_running = 0;                 // 清除中断处理标志
 
   return p;
 }
@@ -169,6 +174,9 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->elapse_ticks = 0;
+  memset(&p->intr_trap, 0, sizeof(struct trapframe));
+  p->intr_is_running = 0;
 }
 
 // Create a user page table for a given process, with no user memory,

@@ -104,4 +104,12 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  
+  // 信号报警机制相关字段
+  int alarm_interval;          // 报警间隔（ticks数），0表示禁用报警
+  uint64 alarm_handler;        // 报警处理函数的用户空间地址
+  int elapse_ticks;            // 自上次报警以来经过的时钟周期数
+  struct trapframe intr_trap;  // 中断发生时保存的trapframe，用于信号处理完成后恢复
+  int intr_is_running;         // 信号处理程序是否正在运行的标志
+
 };
