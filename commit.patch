@@ -1,0 +1,298 @@
+diff --git a/Makefile b/Makefile
+index ded5bc2..5299413 100644
+--- a/Makefile
++++ b/Makefile
+@@ -340,7 +340,8 @@ grade:
+ ##
+ ## FOR web handin
+ ##
+-
++diff:
++	git diff origin/cow HEAD > commit.patch
+ 
+ WEBSUB := https://6828.scripts.mit.edu/2022/handin.py
+ 
+diff --git a/grade-lab-cow b/grade-lab-cow
+old mode 100755
+new mode 100644
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..69b0d68 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -63,6 +63,8 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++void*           kcopy_n_deref(void* pa);
++void            krefpage(void* pa);
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -173,6 +175,8 @@ uint64          walkaddr(pagetable_t, uint64);
+ int             copyout(pagetable_t, uint64, char *, uint64);
+ int             copyin(pagetable_t, char *, uint64, uint64);
+ int             copyinstr(pagetable_t, char *, uint64, uint64);
++int             uvmcheckcowpage(uint64 va);
++int             uvmcowcopy(uint64 va);
+ 
+ // plic.c
+ void            plicinit(void);
+@@ -186,4 +190,4 @@ void            virtio_disk_rw(struct buf *, int);
+ void            virtio_disk_intr(void);
+ 
+ // number of elements in fixed-size array
+-#define NELEM(x) (sizeof(x)/sizeof((x)[0]))
++#define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+\ No newline at end of file
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 0699e7e..53968ab 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -14,6 +14,15 @@ void freerange(void *pa_start, void *pa_end);
+ extern char end[]; // first address after kernel.
+                    // defined by kernel.ld.
+ 
++#define PA2PGREF_ID(p) (((p)-KERNBASE)/PGSIZE)      // ÓÉÎïÀíµØÖ·»ñÈ¡ÎïÀíÒ³id
++#define PGREF_MAX_ENTRIES PA2PGREF_ID(PHYSTOP)      // ÎïÀíÒ³ÊıÉÏÏŞ
++
++int pageref[PGREF_MAX_ENTRIES];         //Ã¿¸öÎïÀíÒ³µÄÒıÓÃÊı Êı×é£¨pageref[i]±íÊ¾µÚi¸öÎïÀíÒ³µÄÒıÓÃÊı£©
++struct spinlock pgreflock;              //ÓÃÓÚpagerefÊı×éµÄËø£¬·ÀÖ¹¾ºÌ¬Ìõ¼şÒıÆğÄÚ´æĞ¹Â©
++
++#define PA2PGREF(p) pageref[PA2PGREF_ID((uint64)(p))]       //»ñÈ¡µØÖ·¶ÔÓ¦ÎïÀíÒ³ÒıÓÃÊı
++
++
+ struct run {
+   struct run *next;
+ };
+@@ -27,6 +36,7 @@ void
+ kinit()
+ {
+   initlock(&kmem.lock, "kmem");
++  initlock(&pgreflock, "pgref");      //³õÊ¼»¯Ëø
+   freerange(end, (void*)PHYSTOP);
+ }
+ 
+@@ -51,15 +61,20 @@ kfree(void *pa)
+   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+     panic("kfree");
+ 
+-  // Fill with junk to catch dangling refs.
+-  memset(pa, 1, PGSIZE);
++  //µ±Ò³ÃæµÄÒıÓÃÊı<=0µÄÊ±ºòÊÍ·ÅÒ³Ãæ
++  acquire(&pgreflock);
++  if (--PA2PGREF(pa) <= 0) {
++    // Fill with junk to catch dangling refs.
++    memset(pa, 1, PGSIZE);
+ 
+-  r = (struct run*)pa;
++    r = (struct run*)pa;
+ 
+-  acquire(&kmem.lock);
+-  r->next = kmem.freelist;
+-  kmem.freelist = r;
+-  release(&kmem.lock);
++    acquire(&kmem.lock);
++    r->next = kmem.freelist;
++    kmem.freelist = r;
++    release(&kmem.lock);
++  }
++  release(&pgreflock);
+ }
+ 
+ // Allocate one 4096-byte page of physical memory.
+@@ -76,7 +91,45 @@ kalloc(void)
+     kmem.freelist = r->next;
+   release(&kmem.lock);
+ 
+-  if(r)
++  if(r) {
+     memset((char*)r, 5, PGSIZE); // fill with junk
++    PA2PGREF(r) = 1;        //½«ĞÂ·ÖÅäµÄÎïÀíÒ³µÄÒıÓÃÊıÉèÖÃÎª1£¨¸Õ·ÖÅäµÄÒ³»¹Ã»Ó³Éä£¬²»»áÓĞ½ø³ÌÀ´Ê¹ÓÃ£¬²»ÓÃ¼ÓËø£©
++  }
+   return (void*)r;
+ }
++
++
++
++//ÎïÀíÒ³ÒıÓÃÊı+1
++void krefpage(void* pa) {
++    acquire(&pgreflock);
++    PA2PGREF(pa)++;
++    release(&pgreflock);
++}
++
++// Ğ´Ê±¸´ÖÆÒ»¸öĞÂµÄÎïÀíµØÖ··µ»Ø
++// Èç¹û¸ÃÎïÀíÒ³µÄÒıÓÃÊı>1£¬Ôò½«ÒıÓÃÊı-1£¬²¢·ÖÅäÒ»¸öĞÂµÄÎïÀíÒ³·µ»Ø
++// Èç¹ûÒıÓÃÊı <=1£¬ÔòÎŞĞè²Ù×÷Ö±½Ó·µ»Ø¸ÃÎïÀíÒ³
++void* kcopy_n_deref(void* pa) {
++    acquire(&pgreflock);
++
++    //µ±Ç°ÎïÀíÒ³µÄÒıÓÃÊıÎª1£¬ÎŞĞè·ÖÅäĞÂµÄÎïÀíÒ³
++    if (PA2PGREF(pa) <= 1) {
++        release(&pgreflock);
++        return pa;
++    }
++
++    //·ÖÅäĞÂµÄÎïÀíÒ³£¬²¢°Ñ¾ÉÒ³ÖĞµÄÊı¾İ¸´ÖÆµ½ĞÂÒ³
++    uint64 newpa = (uint64)kalloc();
++    if (newpa == 0) {           //ÄÚ´æ²»¹»ÁË
++        release(&pgreflock);
++        return 0;
++    }
++    memmove((void*)newpa, (void*)pa, PGSIZE);
++
++    //¾ÉÒ³ÒıÓÃÊı-1
++    PA2PGREF(pa)--;
++
++    release(&pgreflock);
++    return (void*)newpa;
++}
+\ No newline at end of file
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index 20a01db..af26926 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -343,6 +343,8 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_W (1L << 2)
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
++#define PTE_COW (1L << 8) // Ê¹ÓÃÒ³±íÏî flags ÖĞ±£ÁôµÄµÚ 8 Î»±íÊ¾ÊÇ·ñÎªĞ´Ê±¸´ÖÆÒ³
++
+ 
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..bab541a 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -67,10 +67,14 @@ usertrap(void)
+     syscall();
+   } else if((which_dev = devintr()) != 0){
+     // ok
++  } else if((r_scause() == 13 || r_scause() == 15) && uvmcheckcowpage(r_stval())) {
++    // ·¢ÉúÒ³Ãæ´íÎó£¬²¢ÇÒ¼ì²â³ö´íÎóÊÇĞ´Ê±¸´ÖÆ»úÖÆµ¼ÖÂµÄÒ³Ãæ²»¿ÉĞ´£¬ÔòÖ´ĞĞĞ´Ê±¸´ÖÆ
++    if (uvmcowcopy(r_stval()) == -1)
++        p->killed = 1;
+   } else {
+     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+-    setkilled(p);
++    p->killed = 1;
+   }
+ 
+   if(killed(p))
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 9f69783..104e36c 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -5,6 +5,8 @@
+ #include "riscv.h"
+ #include "defs.h"
+ #include "fs.h"
++#include "spinlock.h"
++#include "proc.h"
+ 
+ /*
+  * the kernel's page table.
+@@ -308,7 +310,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+   pte_t *pte;
+   uint64 pa, i;
+   uint flags;
+-  char *mem;
++  // char *mem;
+ 
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walk(old, i, 0)) == 0)
+@@ -316,14 +318,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+     if((*pte & PTE_V) == 0)
+       panic("uvmcopy: page not present");
+     pa = PTE2PA(*pte);
+-    flags = PTE_FLAGS(*pte);
+-    if((mem = kalloc()) == 0)
+-      goto err;
+-    memmove(mem, (char*)pa, PGSIZE);
+-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+-      kfree(mem);
+-      goto err;
+-    }
++
++    // æ¸…é™¤çˆ¶è¿›ç¨‹ä¸­æ‰€æœ‰PTEçš„PTE_Wä½ï¼Œå¹¶ä¸”è®¾ç½®PTE_COWä½ï¼Œè¡¨ç¤ºæ‰€åœ¨é¡µæ˜¯ä¸€ä¸ªå†™æ—¶å¤åˆ¶é¡µï¼ˆå¤šä¸ªè¿›ç¨‹å¼•ç”¨åŒä¸ªç‰©ç†é¡µï¼‰
++    // å¦‚æœè¯¥é¡µæœ¬èº«å°±æ˜¯ä¸å¯å†™ï¼ˆåªè¯»ï¼‰ï¼Œåˆ™ä¸ä¼šæ·»åŠ è¿™ä¸ªæ ‡å¿—ä½
++    if (*pte & PTE_W)
++        *pte = (*pte & ~PTE_W) | PTE_COW;
++
++    flags = PTE_FLAGS(*pte); // è·å–å½“å‰çˆ¶è¿›ç¨‹pteçš„æ ‡å¿—ä½
++
++    //å°†çˆ¶è¿›ç¨‹æ˜ å°„çš„ç‰©ç†é¡µç›´æ¥mapåˆ°å­è¿›ç¨‹ä¸­ï¼Œæƒé™ä¿æŒå’Œçˆ¶è¿›ç¨‹ä¸€è‡´ï¼ˆæ³¨æ„ç°åœ¨éƒ½æ˜¯ä¸å¯å†™ï¼Œè€Œä¸”åŸæœ¬æ˜¯å¯å†™çš„é¡µä¼šæœ‰æ–°å¢çš„PTE_COWå†™æ—¶å¤åˆ¶æ ‡å¿—ï¼‰
++    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0)
++        goto err;
++
++    krefpage((void*)pa);         //æ˜ å°„çš„ç‰©ç†é¡µçš„å¼•ç”¨æ•°+1
+   }
+   return 0;
+ 
+@@ -354,6 +361,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+   uint64 n, va0, pa0;
+ 
+   while(len > 0){
++    if (uvmcheckcowpage(dstva))     //æ£€æŸ¥æ¯ä¸€ä¸ªé¡µæ˜¯å¦ä¸ºCOWé¡µ
++        uvmcowcopy(dstva);
++
+     va0 = PGROUNDDOWN(dstva);
+     pa0 = walkaddr(pagetable, va0);
+     if(pa0 == 0)
+@@ -437,3 +447,39 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+     return -1;
+   }
+ }
++
++//æ£€æŸ¥è™šæ‹Ÿåœ°å€æ‰€åœ¨é¡µæ˜¯å¦æ˜¯COWé¡µ
++int uvmcheckcowpage(uint64 va) {
++    pte_t* pte;
++    struct proc* p = myproc();
++
++    return va < p->sz
++        && ((pte = walk(p->pagetable, va, 0)) != 0)
++        && (*pte & PTE_V)
++        && (*pte & PTE_COW);
++    //åœ°å€åœ¨è¿›ç¨‹å†…å­˜èŒƒå›´å†…  &&  åœ°å€æœ‰æ˜ å°„  && åœ°å€æœ‰æ•ˆä¸”æ˜¯COWé¡µ
++}
++
++//å®ç°å†™æ—¶å¤åˆ¶
++int uvmcowcopy(uint64 va) {
++    pte_t* pte;
++    struct proc* p = myproc();
++
++    if ((pte = walk(p->pagetable, va, 0)) == 0)     //è·å–è™šæ‹Ÿåœ°å€çš„é¡µè¡¨é¡¹
++        panic("uvmcowcopy: walk");
++
++    uint64 pa = PTE2PA(*pte);                     //è·å–æ˜ å°„çš„ç‰©ç†åœ°å€
++    uint64 new = (uint64)kcopy_n_deref((void*)pa);  //è·å–æ–°åˆ†é…çš„ç‰©ç†é¡µï¼ˆå¦‚æœåŸæœ¬çš„ç‰©ç†é¡µå¼•ç”¨æ•°ä¸º1ï¼Œåˆ™è·å–åˆ°çš„è¿˜æ˜¯åŸæœ¬çš„ç‰©ç†é¡µï¼‰
++    if (new == 0)       //å†…å­˜ä¸è¶³çš„æƒ…å†µ
++        return -1;
++
++    //ä¿®æ”¹æ–°çš„æ˜ å°„ï¼Œè‹¥å½“å‰é¡µæœ‰COWæ ‡è¯†ï¼Œæƒé™ä¿®æ”¹ä¸ºå¯å†™ï¼Œæ¸…é™¤COWæ ‡è¯†
++    uint64 flags = PTE_FLAGS(*pte);
++    if (*pte & PTE_COW)
++        flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
++    uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0);              //æ¸…é™¤æ—§çš„æ˜ å°„
++    if (mappages(p->pagetable, va, 1, new, flags) == -1)        //æ–°çš„æ˜ å°„
++        panic("uvmcowcopy: mappages");
++
++    return 0;
++}
+\ No newline at end of file
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..bf0d87a
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++4
+\ No newline at end of file
+diff --git a/traps_diff.patch b/traps_diff.patch
+new file mode 100644
+index 0000000..e69de29
+diff --git a/user/usys.pl b/user/usys.pl
+old mode 100755
+new mode 100644

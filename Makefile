@@ -340,7 +340,12 @@ grade:
 ##
 ## FOR web handin
 ##
+<<<<<<< HEAD
 
+=======
+diff:
+	git diff origin/cow HEAD > commit.patch
+>>>>>>> 4fb2ccf717189ebbd8f0d8f50276c178cb8ce8d2
 
 WEBSUB := https://6828.scripts.mit.edu/2022/handin.py
 
