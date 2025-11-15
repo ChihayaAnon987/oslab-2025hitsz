@@ -102,7 +102,8 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  // 使用 E1000 发送链路帧
+  // 使用 E1000 发送链路帧 mbuf tx_desc tx_mbufs tx_ring
+  // sys_write()，可能多线程调用
   acquire(&e1000_lock);
 
   // 获取E1000期望的下一个数据包的TX环索引
@@ -110,7 +111,7 @@ e1000_transmit(struct mbuf *m)
   int index = regs[E1000_TDT];
   struct tx_desc* tail_desc = &tx_ring[index];
 
-  // 检查环形缓冲区是否溢出
+  // 检查环形缓冲区是否溢出，该标志位会在描述符的数据被处理完成后设置
   if((tail_desc->status & E1000_TXD_STAT_DD) == 0) {
       release(&e1000_lock);
       return -1;
@@ -151,6 +152,7 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  // mbuf rx_desc rx_mbufs rx_ring
   while(1) {
       // 首先通过读取E1000_RDT控制寄存器并加1模RX_RING_SIZE来获取下一个等待接收的数据包所在的环索引
       // 计算下一个描述符的索引位置

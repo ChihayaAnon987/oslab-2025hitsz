@@ -97,6 +97,7 @@
 #define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
 
 // [E1000 3.3.3]
+// mbuf 的描述符，可以理解为指向它具体内容的指针
 struct tx_desc
 {
   uint64 addr;

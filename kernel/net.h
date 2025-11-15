@@ -5,6 +5,7 @@
 #define MBUF_SIZE              2048
 #define MBUF_DEFAULT_HEADROOM  128
 
+// 内存中存放报文的空间
 struct mbuf {
   struct mbuf  *next; // the next mbuf in the chain
   char         *head; // the current start position of the buffer
