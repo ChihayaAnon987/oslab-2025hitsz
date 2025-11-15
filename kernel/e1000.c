@@ -102,49 +102,43 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
+  // 使用 E1000 发送链路帧
   acquire(&e1000_lock);
 
-  /**
-   * todo: ask the E1000 for the TX ring index at which it's expecting the next packet
-   * E1000_TDT ָ�� tx_ring ����һ�����Ա������ descriptor ������
-   */
+  // 获取E1000期望的下一个数据包的TX环索引
+  // E1000_TDT 指向 tx_ring 中下一个可以被分配的 descriptor 的索引
   int index = regs[E1000_TDT];
   struct tx_desc* tail_desc = &tx_ring[index];
 
-  /**
-   * todo: check if the ring is overflow
-   * */
+  // 检查环形缓冲区是否溢出
   if((tail_desc->status & E1000_TXD_STAT_DD) == 0) {
-//      printf("tx_ring buffer is overflow\n");
       release(&e1000_lock);
       return -1;
   }
 
-  /**
-   * todo: use mbuffree() to free the last mbuf that was transmitted from that descriptor
-   * */
+  // 释放之前从该描述符传输的最后一个mbuf
   if(tx_mbufs[index]) {
       mbuffree(tx_mbufs[index]);
   }
 
-  // todo: m->head points to the packet's content in memory,
+  // 设置数据包内容在内存中的地址
   tail_desc->addr = (uint64)(m->head);
 
-  // todo: m->len is the packet length
+  // 设置数据包长度
   tail_desc->length = m->len;
 
-  // todo: set the necessary cmd flag (look at Section 3.3 in the E1000 manual)
+  // 设置必要的命令标志位
+  // E1000_TXD_CMD_EOP: 标识这是一个数据包的结束
+  // E1000_TXD_CMD_RS: 要求在完成传输后设置状态位
   tail_desc->cmd |= E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
 
-  // todo: stash away a pointer to the mbuf for later freeing.
+  // 保存mbuf指针以便后续释放
   tx_mbufs[index] = m;
 
-  // todo: update the E1000_TDT
+  // 更新E1000_TDT寄存器，指向下一个可用的描述符
   regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
-  // release lock
 
   release(&e1000_lock);
-
   return 0;
 }
 
@@ -158,29 +152,33 @@ e1000_recv(void)
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
   while(1) {
-      // todo: First ask the E1000 for the ring index at which the next waiting received packet (if any) is located,
-      // todo: by fetching the E1000_RDT control register and adding one modulo RX_RING_SIZE.
-
-
-      // todo: check if a new packet is available by checking for the E1000_RXD_STAT_DD bit in the status portion of the descriptor.
-      uint32 index = (regs[E1000_RDT] + 1) % RX_RING_SIZE; // fetch the index
+      // 首先通过读取E1000_RDT控制寄存器并加1模RX_RING_SIZE来获取下一个等待接收的数据包所在的环索引
+      // 计算下一个描述符的索引位置
+      uint32 index = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+      
+      // 获取对应索引的接收描述符
       struct rx_desc *des = &rx_ring[index];
+      
+      // 检查是否有新数据包到达，通过检查描述符状态中的E1000_RXD_STAT_DD位来判断
+      // 如果没有新的数据包则返回
       if(!(des->status & E1000_RXD_STAT_DD)) {
           return;
       }
 
-      // todo: update the mbuf's m->len to the length reported in the descriptor. Deliver the mbuf to the network stack using net_rx().
+      // 更新mbuf的长度为描述符中报告的长度，并使用net_rx()将mbuf传递给网络协议栈处理
       struct mbuf *buf = rx_mbufs[index];
       buf->len = des->length;
       net_rx(buf);
 
-      // todo: Then allocate a new mbuf using mbufalloc() to replace the one just given to net_rx().
+      // 然后使用mbufalloc()分配一个新的mbuf来替换刚刚传递给net_rx()的那个
       struct mbuf *new_buf = mbufalloc(0);
       rx_mbufs[index] = new_buf;
-      // todo: Program its data pointer (m->head) into the descriptor. Clear the descriptor's status bits to zero.
+      
+      // 将新mbuf的数据指针(m->head)写入描述符，并将描述符的状态位清零
       des->addr = (uint64)new_buf->head;
       des->status = 0;
-      // todo: Finally, update the E1000_RDT register to be the index of the last ring descriptor processed.
+      
+      // 最后更新E1000_RDT寄存器为最后处理的环描述符索引
       regs[E1000_RDT] = index;
   }
 }
