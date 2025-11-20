@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "buf.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -341,6 +342,47 @@ sys_open(void)
     return -1;
   }
 
+  if(ip->type == T_SYMLINK){
+    // 检查是否设置了O_NOFOLLOW标志位
+    // 如果没有设置，则需要解析符号链接
+    if(!(omode & O_NOFOLLOW)){
+      int cycle = 0;              // 循环计数器，防止无限循环
+      char target[MAXPATH];       // 存储符号链接指向的目标路径
+      
+      // 循环解析符号链接，直到找到非符号链接的文件
+      while(ip->type == T_SYMLINK){
+        // 如果循环次数超过10次，认为可能存在循环链接，返回错误
+        if(cycle == 10){
+          iunlockput(ip);  // 解锁并释放当前inode
+          end_op();        // 结束文件系统操作事务
+          return -1;       // 返回错误码，表示循环链接
+        }
+        
+        cycle++;  // 增加循环计数
+        
+        // 清空目标路径缓冲区
+        memset(target, 0, sizeof(target));
+        
+        // 从符号链接的inode中读取目标路径
+        // readi函数会将inode中的数据读取到target缓冲区中
+        readi(ip, 0, (uint64)target, 0, MAXPATH);
+        
+        // 解锁并释放当前的符号链接inode
+        iunlockput(ip);
+        
+        // 根据目标路径查找对应的inode
+        // namei会返回目标文件的inode
+        if((ip = namei(target)) == 0){
+          end_op();   // 结束文件系统操作事务
+          return -1;  // 目标文件不存在，返回错误
+        }
+        
+        // 锁定找到的目标inode
+        ilock(ip);
+      }
+    }
+  }
+
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -501,5 +543,40 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  // 获取目标路径和符号链接路径
+  char target[MAXPATH];
+  memset(target, 0, sizeof(target));  // 清空目标路径缓冲区
+  char path[MAXPATH];
+  
+  // 从系统调用参数中获取目标路径和符号链接路径
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0){
+    return -1;
+  }
+  
+  struct inode *ip;
+
+  begin_op();  // 开始文件系统操作事务
+  
+  // 创建一个新的符号链接inode
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  // 将目标路径写入符号链接inode的数据块中
+  // 这样当访问符号链接时，就能知道它指向哪个文件
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH){
+    // panic("symlink write failed");
+    return -1;
+  }
+
+  iunlockput(ip);  // 解锁并释放inode
+  end_op();        // 结束文件系统操作事务
   return 0;
 }

@@ -123,6 +123,11 @@ recover_from_log(void)
 }
 
 // called at the start of each FS system call.
+// 获取日志锁
+// 检查是否正在提交事务，如果是则等待
+// 检查日志空间是否足够，如果不够则等待
+// 增加正在进行的文件系统操作计数
+// 释放日志锁
 void
 begin_op(void)
 {
@@ -143,6 +148,14 @@ begin_op(void)
 
 // called at the end of each FS system call.
 // commits if this was the last outstanding operation.
+// 获取日志锁
+// 减少正在进行的文件系统操作计数
+// 如果这是最后一个操作，则触发事务提交
+// 如果还有其他操作在等待资源，则唤醒它们
+// 如果需要提交，则调用 commit 函数执行实际提交
+// -------begin_op和end_op-------
+// 确保文件系统操作要么全部完成，要么全部不完成，协调多个并发的文件系统操作
+// 控制日志空间的使用，通过日志机制实现系统崩溃后的恢复
 void
 end_op(void)
 {

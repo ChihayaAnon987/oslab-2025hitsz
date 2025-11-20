@@ -188,7 +188,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-
+	$U/_symlinktest\
 
 
 
@@ -340,7 +340,8 @@ grade:
 ##
 ## FOR web handin
 ##
-
+diff:
+	git diff origin/fs > commit.patch
 
 WEBSUB := https://6828.scripts.mit.edu/2022/handin.py
 
