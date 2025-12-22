@@ -1,9 +1,12 @@
 diff --git a/Makefile b/Makefile
-index ded5bc2..a9302e9 100644
+index ded5bc2..fbd9b31 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -337,6 +337,9 @@ grade:
+@@ -335,8 +335,12 @@ grade:
+ 	@echo $(MAKE) clean
+ 	@$(MAKE) clean || \
            (echo "'make clean' failed.  HINT: Do you have another running instance of xv6?" && exit 1)
++	chmod +x ./grade-lab-$(LAB)
  	./grade-lab-$(LAB) $(GRADEFLAGS)
  
 +diff:
@@ -14,10 +17,10 @@ index ded5bc2..a9302e9 100644
  ##
 diff --git a/commit.patch b/commit.patch
 new file mode 100644
-index 0000000..1be7450
+index 0000000..545daef
 --- /dev/null
 +++ b/commit.patch
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,266 @@
 +diff --git a/Makefile b/Makefile
 +index ded5bc2..a9302e9 100644
 +--- a/Makefile
@@ -32,19 +35,143 @@ index 0000000..1be7450
 + ##
 + ## FOR web handin
 + ##
++diff --git a/commit.patch b/commit.patch
++new file mode 100644
++index 0000000..1be7450
++--- /dev/null
+++++ b/commit.patch
++@@ -0,0 +1,117 @@
+++diff --git a/Makefile b/Makefile
+++index ded5bc2..a9302e9 100644
+++--- a/Makefile
++++++ b/Makefile
+++@@ -337,6 +337,9 @@ grade:
+++           (echo "'make clean' failed.  HINT: Do you have another running instance of xv6?" && exit 1)
+++ 	./grade-lab-$(LAB) $(GRADEFLAGS)
+++ 
++++diff:
++++	git diff origin/net HEAD > commit.patch
++++
+++ ##
+++ ## FOR web handin
+++ ##
+++diff --git a/grade-lab-net b/grade-lab-net
+++old mode 100755
+++new mode 100644
+++diff --git a/kernel/e1000.c b/kernel/e1000.c
+++index 70a2adf..2c74fc5 100644
+++--- a/kernel/e1000.c
++++++ b/kernel/e1000.c
+++@@ -102,7 +102,43 @@ e1000_transmit(struct mbuf *m)
+++   // the TX descriptor ring so that the e1000 sends it. Stash
+++   // a pointer so that it can be freed after sending.
+++   //
+++-  
++++  // 使用 E1000 发送链路帧
++++  acquire(&e1000_lock);
++++
++++  // 获取E1000期望的下一个数据包的TX环索引
++++  // E1000_TDT 指向 tx_ring 中下一个可以被分配的 descriptor 的索引
++++  int index = regs[E1000_TDT];
++++  struct tx_desc* tail_desc = &tx_ring[index];
++++
++++  // 检查环形缓冲区是否溢出
++++  if((tail_desc->status & E1000_TXD_STAT_DD) == 0) {
++++      release(&e1000_lock);
++++      return -1;
++++  }
++++
++++  // 释放之前从该描述符传输的最后一个mbuf
++++  if(tx_mbufs[index]) {
++++      mbuffree(tx_mbufs[index]);
++++  }
++++
++++  // 设置数据包内容在内存中的地址
++++  tail_desc->addr = (uint64)(m->head);
++++
++++  // 设置数据包长度
++++  tail_desc->length = m->len;
++++
++++  // 设置必要的命令标志位
++++  // E1000_TXD_CMD_EOP: 标识这是一个数据包的结束
++++  // E1000_TXD_CMD_RS: 要求在完成传输后设置状态位
++++  tail_desc->cmd |= E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
++++
++++  // 保存mbuf指针以便后续释放
++++  tx_mbufs[index] = m;
++++
++++  // 更新E1000_TDT寄存器，指向下一个可用的描述符
++++  regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
++++
++++  release(&e1000_lock);
+++   return 0;
+++ }
+++ 
+++@@ -115,6 +151,36 @@ e1000_recv(void)
+++   // Check for packets that have arrived from the e1000
+++   // Create and deliver an mbuf for each packet (using net_rx()).
+++   //
++++  while(1) {
++++      // 首先通过读取E1000_RDT控制寄存器并加1模RX_RING_SIZE来获取下一个等待接收的数据包所在的环索引
++++      // 计算下一个描述符的索引位置
++++      uint32 index = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
++++      
++++      // 获取对应索引的接收描述符
++++      struct rx_desc *des = &rx_ring[index];
++++      
++++      // 检查是否有新数据包到达，通过检查描述符状态中的E1000_RXD_STAT_DD位来判断
++++      // 如果没有新的数据包则返回
++++      if(!(des->status & E1000_RXD_STAT_DD)) {
++++          return;
++++      }
++++
++++      // 更新mbuf的长度为描述符中报告的长度，并使用net_rx()将mbuf传递给网络协议栈处理
++++      struct mbuf *buf = rx_mbufs[index];
++++      buf->len = des->length;
++++      net_rx(buf);
++++
++++      // 然后使用mbufalloc()分配一个新的mbuf来替换刚刚传递给net_rx()的那个
++++      struct mbuf *new_buf = mbufalloc(0);
++++      rx_mbufs[index] = new_buf;
++++      
++++      // 将新mbuf的数据指针(m->head)写入描述符，并将描述符的状态位清零
++++      des->addr = (uint64)new_buf->head;
++++      des->status = 0;
++++      
++++      // 最后更新E1000_RDT寄存器为最后处理的环描述符索引
++++      regs[E1000_RDT] = index;
++++  }
+++ }
+++ 
+++ void
+++diff --git a/packets.pcap b/packets.pcap
+++index 82d353e..b6b2ebe 100644
+++Binary files a/packets.pcap and b/packets.pcap differ
+++diff --git a/time.txt b/time.txt
+++new file mode 100644
+++index 0000000..bf0d87a
+++--- /dev/null
++++++ b/time.txt
+++@@ -0,0 +1 @@
++++4
+++\ No newline at end of file
+++diff --git a/user/usys.pl b/user/usys.pl
+++old mode 100755
+++new mode 100644
 +diff --git a/grade-lab-net b/grade-lab-net
 +old mode 100755
 +new mode 100644
 +diff --git a/kernel/e1000.c b/kernel/e1000.c
-+index 70a2adf..2c74fc5 100644
++index 70a2adf..f1f3bf3 100644
 +--- a/kernel/e1000.c
 ++++ b/kernel/e1000.c
-+@@ -102,7 +102,43 @@ e1000_transmit(struct mbuf *m)
++@@ -102,7 +102,44 @@ e1000_transmit(struct mbuf *m)
 +   // the TX descriptor ring so that the e1000 sends it. Stash
 +   // a pointer so that it can be freed after sending.
 +   //
 +-  
-++  // 使用 E1000 发送链路帧
+++  // 使用 E1000 发送链路帧 mbuf tx_desc tx_mbufs tx_ring
+++  // sys_write()，可能多线程调用
 ++  acquire(&e1000_lock);
 ++
 ++  // 获取E1000期望的下一个数据包的TX环索引
@@ -52,7 +179,7 @@ index 0000000..1be7450
 ++  int index = regs[E1000_TDT];
 ++  struct tx_desc* tail_desc = &tx_ring[index];
 ++
-++  // 检查环形缓冲区是否溢出
+++  // 检查环形缓冲区是否溢出，该标志位会在描述符的数据被处理完成后设置
 ++  if((tail_desc->status & E1000_TXD_STAT_DD) == 0) {
 ++      release(&e1000_lock);
 ++      return -1;
@@ -84,10 +211,11 @@ index 0000000..1be7450
 +   return 0;
 + }
 + 
-+@@ -115,6 +151,36 @@ e1000_recv(void)
++@@ -115,6 +152,37 @@ e1000_recv(void)
 +   // Check for packets that have arrived from the e1000
 +   // Create and deliver an mbuf for each packet (using net_rx()).
 +   //
+++  // mbuf rx_desc rx_mbufs rx_ring
 ++  while(1) {
 ++      // 首先通过读取E1000_RDT控制寄存器并加1模RX_RING_SIZE来获取下一个等待接收的数据包所在的环索引
 ++      // 计算下一个描述符的索引位置
@@ -121,6 +249,30 @@ index 0000000..1be7450
 + }
 + 
 + void
++diff --git a/kernel/e1000_dev.h b/kernel/e1000_dev.h
++index 9b462df..f8e1395 100644
++--- a/kernel/e1000_dev.h
+++++ b/kernel/e1000_dev.h
++@@ -97,6 +97,7 @@
++ #define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
++ 
++ // [E1000 3.3.3]
+++// mbuf 的描述符，可以理解为指向它具体内容的指针
++ struct tx_desc
++ {
++   uint64 addr;
++diff --git a/kernel/net.h b/kernel/net.h
++index 9e6fefe..8f447d8 100644
++--- a/kernel/net.h
+++++ b/kernel/net.h
++@@ -5,6 +5,7 @@
++ #define MBUF_SIZE              2048
++ #define MBUF_DEFAULT_HEADROOM  128
++ 
+++// 内存中存放报文的空间
++ struct mbuf {
++   struct mbuf  *next; // the next mbuf in the chain
++   char         *head; // the current start position of the buffer
 +diff --git a/packets.pcap b/packets.pcap
 +index 82d353e..b6b2ebe 100644
 +Binary files a/packets.pcap and b/packets.pcap differ
@@ -139,10 +291,10 @@ diff --git a/grade-lab-net b/grade-lab-net
 old mode 100755
 new mode 100644
 diff --git a/kernel/e1000.c b/kernel/e1000.c
-index 70a2adf..f1f3bf3 100644
+index 70a2adf..19f42f1 100644
 --- a/kernel/e1000.c
 +++ b/kernel/e1000.c
-@@ -102,7 +102,44 @@ e1000_transmit(struct mbuf *m)
+@@ -102,7 +102,47 @@ e1000_transmit(struct mbuf *m)
    // the TX descriptor ring so that the e1000 sends it. Stash
    // a pointer so that it can be freed after sending.
    //
@@ -176,10 +328,13 @@ index 70a2adf..f1f3bf3 100644
 +  // 设置必要的命令标志位
 +  // E1000_TXD_CMD_EOP: 标识这是一个数据包的结束
 +  // E1000_TXD_CMD_RS: 要求在完成传输后设置状态位
-+  tail_desc->cmd |= E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
++  tail_desc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
 +
 +  // 保存mbuf指针以便后续释放
 +  tx_mbufs[index] = m;
++
++  // 确保描述符的所有字段都写入内存后再更新 TDT 寄存器
++  __sync_synchronize();
 +
 +  // 更新E1000_TDT寄存器，指向下一个可用的描述符
 +  regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
@@ -188,7 +343,7 @@ index 70a2adf..f1f3bf3 100644
    return 0;
  }
  
-@@ -115,6 +152,37 @@ e1000_recv(void)
+@@ -115,6 +155,40 @@ e1000_recv(void)
    // Check for packets that have arrived from the e1000
    // Create and deliver an mbuf for each packet (using net_rx()).
    //
@@ -220,6 +375,9 @@ index 70a2adf..f1f3bf3 100644
 +      des->addr = (uint64)new_buf->head;
 +      des->status = 0;
 +      
++      // 确保描述符更新完成后再更新 RDT 寄存器
++      __sync_synchronize();
++      
 +      // 最后更新E1000_RDT寄存器为最后处理的环描述符索引
 +      regs[E1000_RDT] = index;
 +  }
@@ -234,7 +392,7 @@ index 9b462df..f8e1395 100644
  #define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
  
  // [E1000 3.3.3]
-+// mbuf 的描述符，可以理解为指向它具体内容的指针
++// mbuf ������������������Ϊָ�����������ݵ�ָ��
  struct tx_desc
  {
    uint64 addr;
@@ -246,12 +404,12 @@ index 9e6fefe..8f447d8 100644
  #define MBUF_SIZE              2048
  #define MBUF_DEFAULT_HEADROOM  128
  
-+// 内存中存放报文的空间
++// �ڴ��д�ű��ĵĿռ�
  struct mbuf {
    struct mbuf  *next; // the next mbuf in the chain
    char         *head; // the current start position of the buffer
 diff --git a/packets.pcap b/packets.pcap
-index 82d353e..b6b2ebe 100644
+index 82d353e..7c7ee26 100644
 Binary files a/packets.pcap and b/packets.pcap differ
 diff --git a/time.txt b/time.txt
 new file mode 100644
@@ -261,6 +419,22 @@ index 0000000..bf0d87a
 @@ -0,0 +1 @@
 +4
 \ No newline at end of file
+diff --git a/user/nettests.c b/user/nettests.c
+index 2f7d6cd..3687b21 100644
+--- a/user/nettests.c
++++ b/user/nettests.c
+@@ -232,8 +232,9 @@ dns()
+   memset(obuf, 0, N);
+   memset(ibuf, 0, N);
+   
+-  // 8.8.8.8: google's name server
+-  dst = (8 << 24) | (8 << 16) | (8 << 8) | (8 << 0);
++  // Use QEMU's built-in DNS server at 10.0.2.3
++  // QEMU user mode networking provides a DNS forwarder at this address
++  dst = (10 << 24) | (0 << 16) | (2 << 8) | (3 << 0);
+ 
+   if((fd = connect(dst, 10000, 53)) < 0){
+     fprintf(2, "ping: connect() failed\n");
 diff --git a/user/usys.pl b/user/usys.pl
 old mode 100755
 new mode 100644
