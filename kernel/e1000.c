@@ -131,10 +131,13 @@ e1000_transmit(struct mbuf *m)
   // 设置必要的命令标志位
   // E1000_TXD_CMD_EOP: 标识这是一个数据包的结束
   // E1000_TXD_CMD_RS: 要求在完成传输后设置状态位
-  tail_desc->cmd |= E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tail_desc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
 
   // 保存mbuf指针以便后续释放
   tx_mbufs[index] = m;
+
+  // 确保描述符的所有字段都写入内存后再更新 TDT 寄存器
+  __sync_synchronize();
 
   // 更新E1000_TDT寄存器，指向下一个可用的描述符
   regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
@@ -179,6 +182,9 @@ e1000_recv(void)
       // 将新mbuf的数据指针(m->head)写入描述符，并将描述符的状态位清零
       des->addr = (uint64)new_buf->head;
       des->status = 0;
+      
+      // 确保描述符更新完成后再更新 RDT 寄存器
+      __sync_synchronize();
       
       // 最后更新E1000_RDT寄存器为最后处理的环描述符索引
       regs[E1000_RDT] = index;

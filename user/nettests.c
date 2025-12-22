@@ -232,8 +232,9 @@ dns()
   memset(obuf, 0, N);
   memset(ibuf, 0, N);
   
-  // 8.8.8.8: google's name server
-  dst = (8 << 24) | (8 << 16) | (8 << 8) | (8 << 0);
+  // Use QEMU's built-in DNS server at 10.0.2.3
+  // QEMU user mode networking provides a DNS forwarder at this address
+  dst = (10 << 24) | (0 << 16) | (2 << 8) | (3 << 0);
 
   if((fd = connect(dst, 10000, 53)) < 0){
     fprintf(2, "ping: connect() failed\n");
