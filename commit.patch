@@ -234,7 +234,7 @@ index 9b462df..f8e1395 100644
  #define E1000_TXD_STAT_DD    0x00000001 /* Descriptor Done */
  
  // [E1000 3.3.3]
-+// mbuf 的描述符，可以理解为指向它具体内容的指针
++// mbuf 鐨勬弿杩扮锛屽彲浠ョ悊瑙ｄ负鎸囧悜瀹冨叿浣撳唴瀹圭殑鎸囬拡
  struct tx_desc
  {
    uint64 addr;
@@ -246,7 +246,7 @@ index 9e6fefe..8f447d8 100644
  #define MBUF_SIZE              2048
  #define MBUF_DEFAULT_HEADROOM  128
  
-+// 内存中存放报文的空间
++// 鍐呭瓨涓瓨鏀炬姤鏂囩殑绌洪棿
  struct mbuf {
    struct mbuf  *next; // the next mbuf in the chain
    char         *head; // the current start position of the buffer
