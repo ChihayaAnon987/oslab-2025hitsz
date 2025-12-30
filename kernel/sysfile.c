@@ -509,12 +509,12 @@ sys_mmap(void)
 {
   uint64 addr;
   int length, prot, flags, fd, offset;
-  argaddr(0, &addr);
-  argint(1, &length);
-  argint(2, &prot);
-  argint(3, &flags);
-  argint(4, &fd);
-  argint(5, &offset);
+  argaddr(0, &addr);      // addr: 提示地址（xv6忽略）
+  argint(1, &length);     // length: 映射长度
+  argint(2, &prot);       // prot: 保护权限
+  argint(3, &flags);      // flags: MAP_SHARED/MAP_PRIVATE
+  argint(4, &fd);         // fd: 文件描述符
+  argint(5, &offset);     // offset: 文件偏移
   
   // Check for invalid parameters
   if (length < 0 || fd < 0 || fd >= NOFILE) {
@@ -526,11 +526,12 @@ sys_mmap(void)
 
   int pte_flag = PTE_U;
   if (prot & PROT_WRITE) {
-    if(!f->writable && !(flags & MAP_PRIVATE)) return -1; // map to a unwritable file with PROT_WRITE
+    // 写权限检查：若文件不可写且非 MAP_PRIVATE，拒绝
+    if(!f->writable && !(flags & MAP_PRIVATE)) return -1;
     pte_flag |= PTE_W;
   }
   if (prot & PROT_READ) {
-    if(!f->readable) return -1; // map to a unreadable file with PROT_READ
+    if(!f->readable) return -1;  // 文件必须可读
     pte_flag |= PTE_R;
   }
 

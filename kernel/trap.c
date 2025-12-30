@@ -66,7 +66,8 @@ usertrap(void)
 
     syscall();
   } else if(r_scause() == 13 || r_scause() == 15) {
-    // page fault
+    // scause=13: Load Page Fault (¶Á)
+    // scause=15: Store Page Fault (Ð´)
     if(mmap_handler(r_stval(), r_scause()) != 0) {
       printf("page fault\n");
       p->killed = 1;

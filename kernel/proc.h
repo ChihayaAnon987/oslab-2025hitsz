@@ -82,19 +82,19 @@ struct trapframe {
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 
-#define NVMA 16
-#define VMA_START (MAXVA / 2)
-struct vma{
-  uint64 start;
-  uint64 end;
-  uint64 length; // 0 means vma not used
-  uint64 off;
-  int permission;
-  int flags;
-  struct file *file;
-  struct vma *next;
+#define NVMA 16                    // 全局最多 16 个 VMA
+#define VMA_START (MAXVA / 2)      // mmap 区域起始地址
 
-  struct spinlock lock;
+struct vma {
+  uint64 start;           // 映射起始虚拟地址
+  uint64 end;             // 映射结束虚拟地址
+  uint64 length;          // 映射长度 (0 表示 VMA 未使用)
+  uint64 off;             // 文件内偏移
+  int permission;         // 页表权限 (PTE_R, PTE_W, PTE_U)
+  int flags;              // MAP_SHARED 或 MAP_PRIVATE
+  struct file *file;      // 映射的文件
+  struct vma *next;       // 链表下一个 VMA
+  struct spinlock lock;   // 自旋锁
 };
 
 // Per-process state
